@@ -29,6 +29,7 @@ from ._common import (
     DateTime,
     FindingId,
     Limit,
+    Offset,
     OrderBy,
     Owners,
     OwnerType,
@@ -41,6 +42,7 @@ from ._common import (
     Status,
     compact,
     list_result,
+    locate,
     page_params,
     path_id,
     run_tool,
@@ -55,12 +57,19 @@ def _account(account_id: str) -> str:
 def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
     @mcp.tool(annotations=READ_ONLY)
     async def blumira_msp_accounts_list(
-        page: Page = None, page_size: PageSize = None, limit: Limit = None, order_by: OrderBy = None
+        page: Page = None,
+        page_size: PageSize = None,
+        limit: Limit = None,
+        order_by: OrderBy = None,
+        offset: Offset = None,
     ) -> str:
         """List the MSP's sub-accounts (client organizations) with their account ids."""
 
         async def action(client: BlumiraClient) -> dict:
-            return list_result(await client.get("/msp/accounts", page_params(page, page_size, limit, order_by)))
+            number, size, start = locate(offset, page, page_size)
+            return list_result(
+                await client.get("/msp/accounts", page_params(number, size, limit, order_by)), number, size, start
+            )
 
         return await run_tool("blumira_msp_accounts_list", client_factory, action)
 
@@ -82,14 +91,16 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         priority: Priority = None,
         created_after: DateTime = None,
         created_before: DateTime = None,
+        offset: Offset = None,
     ) -> str:
         """List findings across every MSP sub-account, filtered by status, priority or created window."""
 
         async def action(client: BlumiraClient) -> dict:
-            params = page_params(page, page_size, limit) | compact(
+            number, size, start = locate(offset, page, page_size)
+            params = page_params(number, size, limit) | compact(
                 {"status": status, "priority": priority, "created_after": created_after, "created_before": created_before}
             )
-            return list_result(await client.get("/msp/accounts/findings", params))
+            return list_result(await client.get("/msp/accounts/findings", params), number, size, start)
 
         return await run_tool("blumira_msp_findings_all", client_factory, action)
 
@@ -100,12 +111,14 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         page_size: PageSize = None,
         status: Status = None,
         priority: Priority = None,
+        offset: Offset = None,
     ) -> str:
         """List the findings of one MSP sub-account."""
 
         async def action(client: BlumiraClient) -> dict:
-            params = page_params(page, page_size) | compact({"status": status, "priority": priority})
-            return list_result(await client.get(f"{_account(account_id)}/findings", params))
+            number, size, start = locate(offset, page, page_size)
+            params = page_params(number, size) | compact({"status": status, "priority": priority})
+            return list_result(await client.get(f"{_account(account_id)}/findings", params), number, size, start)
 
         return await run_tool("blumira_msp_findings_list", client_factory, action)
 
@@ -170,11 +183,16 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         return await run_tool("blumira_msp_findings_comments_add", client_factory, action)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def blumira_msp_devices_list(account_id: AccountId, page: Page = None, page_size: PageSize = None) -> str:
+    async def blumira_msp_devices_list(
+        account_id: AccountId, page: Page = None, page_size: PageSize = None, offset: Offset = None
+    ) -> str:
         """List the agent devices of one MSP sub-account."""
 
         async def action(client: BlumiraClient) -> dict:
-            return list_result(await client.get(f"{_account(account_id)}/agents/devices", page_params(page, page_size)))
+            number, size, start = locate(offset, page, page_size)
+            return list_result(
+                await client.get(f"{_account(account_id)}/agents/devices", page_params(number, size)), number, size, start
+            )
 
         return await run_tool("blumira_msp_devices_list", client_factory, action)
 
@@ -190,11 +208,16 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         return await run_tool("blumira_msp_devices_get", client_factory, action)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def blumira_msp_keys_list(account_id: AccountId, page: Page = None, page_size: PageSize = None) -> str:
+    async def blumira_msp_keys_list(
+        account_id: AccountId, page: Page = None, page_size: PageSize = None, offset: Offset = None
+    ) -> str:
         """List the agent enrolment keys of one MSP sub-account."""
 
         async def action(client: BlumiraClient) -> dict:
-            return list_result(await client.get(f"{_account(account_id)}/agents/keys", page_params(page, page_size)))
+            number, size, start = locate(offset, page, page_size)
+            return list_result(
+                await client.get(f"{_account(account_id)}/agents/keys", page_params(number, size)), number, size, start
+            )
 
         return await run_tool("blumira_msp_keys_list", client_factory, action)
 
@@ -210,10 +233,15 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         return await run_tool("blumira_msp_keys_get", client_factory, action)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def blumira_msp_users_list(account_id: AccountId, page: Page = None, page_size: PageSize = None) -> str:
+    async def blumira_msp_users_list(
+        account_id: AccountId, page: Page = None, page_size: PageSize = None, offset: Offset = None
+    ) -> str:
         """List the users of one MSP sub-account (ids usable as comment sender or owners)."""
 
         async def action(client: BlumiraClient) -> dict:
-            return list_result(await client.get(f"{_account(account_id)}/users", page_params(page, page_size)))
+            number, size, start = locate(offset, page, page_size)
+            return list_result(
+                await client.get(f"{_account(account_id)}/users", page_params(number, size)), number, size, start
+            )
 
         return await run_tool("blumira_msp_users_list", client_factory, action)

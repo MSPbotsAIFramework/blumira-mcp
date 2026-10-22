@@ -16,13 +16,17 @@
 from mcp.server.fastmcp import FastMCP
 
 from ..api_client import BlumiraClient
-from ._common import READ_ONLY, ClientFactory, Limit, OrderBy, Page, PageSize, list_result, page_params, run_tool
+from ._common import READ_ONLY, ClientFactory, Limit, Offset, OrderBy, Page, PageSize, list_result, locate, page_params, run_tool
 
 
 def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
     @mcp.tool(annotations=READ_ONLY)
     async def blumira_users_list(
-        page: Page = None, page_size: PageSize = None, limit: Limit = None, order_by: OrderBy = None
+        page: Page = None,
+        page_size: PageSize = None,
+        limit: Limit = None,
+        order_by: OrderBy = None,
+        offset: Offset = None,
     ) -> str:
         """List the organization's users with their ids, names and e-mail addresses.
 
@@ -30,9 +34,10 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         """
 
         async def action(client: BlumiraClient) -> dict:
-            params = page_params(page, page_size, limit)
+            number, size, start = locate(offset, page, page_size)
+            params = page_params(number, size, limit)
             if order_by:
                 params["order_by"] = order_by
-            return list_result(await client.get("/org/users", params))
+            return list_result(await client.get("/org/users", params), number, size, start)
 
         return await run_tool("blumira_users_list", client_factory, action)

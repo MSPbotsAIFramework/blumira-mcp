@@ -67,7 +67,7 @@ WRITE_TOOLS = {
 
 FINDINGS_FILTERS = [
     "page", "page_size", "limit", "order_by", "status", "priority", "category", "name", "name.contains",
-    "name.regex", "created_after", "created_before", "modified_after", "modified_before", "blocked",
+    "name.regex", "created_after", "created_before", "modified_after", "modified_before", "blocked", "offset",
 ]
 
 

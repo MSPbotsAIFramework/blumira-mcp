@@ -190,3 +190,156 @@ async def test_empty_comment_is_rejected(monkeypatch):
     fake = FakeApi()
     result = await _call(monkeypatch, fake, "blumira_findings_comments_add", {"finding_id": "f1", "body": "  ", "sender": "u1"})
     assert result["error"]["code"] == "invalid_argument" and fake.api() == []
+
+
+# --- Page-number paging that survives truncation -------------------------------------------
+# Blumira pages by page number + page_size only. A page cut to fit the response size limit
+# continues by next_offset (record position), which reads the page that holds it and skips
+# the records before it.
+
+PAGED_TOOLS = [
+    ("blumira_findings_list", {}, "/org/findings"),
+    ("blumira_agents_devices_list", {}, "/org/agents/devices"),
+    ("blumira_agents_keys_list", {}, "/org/agents/keys"),
+    ("blumira_users_list", {}, "/org/users"),
+    ("blumira_msp_accounts_list", {}, "/msp/accounts"),
+    ("blumira_msp_findings_all", {}, "/msp/accounts/findings"),
+    ("blumira_msp_findings_list", {"account_id": "a1"}, "/msp/accounts/a1/findings"),
+    ("blumira_msp_devices_list", {"account_id": "a1"}, "/msp/accounts/a1/agents/devices"),
+    ("blumira_msp_keys_list", {"account_id": "a1"}, "/msp/accounts/a1/agents/keys"),
+    ("blumira_msp_users_list", {"account_id": "a1"}, "/msp/accounts/a1/users"),
+]
+TOOL_NAMES = [t[0] for t in PAGED_TOOLS]
+
+
+def _paging_api(total: int, pad: int = 0) -> FakeApi:
+    """Fake Blumira API that pages ``total`` records by page / page_size like the real one."""
+    # many short fields: shortening long values cannot make a page of these fit
+    records = [{"id": f"r{i}", **{f"f{j}": "x" * 70 for j in range(pad // 70)}} for i in range(total)]
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", 1))
+        size = int(request.url.params.get("page_size", 50))
+        chunk = records[(page - 1) * size : page * size]
+        pages = (total + size - 1) // size
+        nxt = f"?page={page + 1}" if page < pages else None
+        return httpx.Response(
+            200,
+            json={
+                "status": "OK",
+                "data": chunk,
+                "links": {"self": f"?page={page}", "next": nxt, "prev": None},
+                "meta": {"page": page, "page_size": size, "total_items": total, "total_pages": pages},
+            },
+        )
+
+    return FakeApi(reply)
+
+
+def _ids(result: dict) -> list[str]:
+    return [r["id"] for r in result["items"]]
+
+
+async def _walk(monkeypatch, fake, tool, extra, first_args):
+    seen, args, calls = [], dict(extra, **first_args), 0
+    while True:
+        result = await _call(monkeypatch, fake, tool, args)
+        calls += 1
+        assert calls < 100
+        assert "retry_page_size" not in result
+        seen += _ids(result)
+        if result.get("next_offset") is None:
+            assert result["has_more"] is False
+            return seen, calls
+        args = dict(extra, offset=result["next_offset"])
+        if "page_size" in first_args:
+            args["page_size"] = first_args["page_size"]
+
+
+@pytest.mark.parametrize("tool,extra,path", PAGED_TOOLS, ids=TOOL_NAMES)
+async def test_cut_pages_walked_by_next_offset_return_every_record_once(monkeypatch, tool, extra, path):
+    fake = _paging_api(130, pad=1400)  # 20 fields of 70 chars: a 50-record page does not fit 20,000
+    seen, calls = await _walk(monkeypatch, fake, tool, extra, {})
+    assert seen == [f"r{i}" for i in range(130)]
+    assert calls > 3  # pages really were cut
+    assert all(r.url.path == BASE + path for r in fake.api())
+
+
+@pytest.mark.parametrize("tool,extra,path", PAGED_TOOLS, ids=TOOL_NAMES)
+async def test_cut_pages_from_a_later_page(monkeypatch, tool, extra, path):
+    fake = _paging_api(130, pad=1400)
+    seen, _ = await _walk(monkeypatch, fake, tool, extra, {"page": 3, "page_size": 20})
+    assert seen == [f"r{i}" for i in range(40, 130)]
+    # every request keeps the caller's page size
+    assert {r.url.params["page_size"] for r in fake.api()} == {"20"}
+
+
+@pytest.mark.parametrize("tool,extra,path", PAGED_TOOLS, ids=TOOL_NAMES)
+async def test_truncated_result_continues_by_offset_without_retry_page_size(monkeypatch, tool, extra, path):
+    fake = _paging_api(130, pad=1400)
+    result = await _call(monkeypatch, fake, tool, dict(extra, page=2))
+    assert result["truncated"] is True
+    assert "retry_page_size" not in result
+    assert result["next_offset"] == 50 + result["count"]
+    assert _ids(result) == [f"r{i}" for i in range(50, 50 + result["count"])]
+
+
+@pytest.mark.parametrize(
+    "offset,page,first",
+    [(0, "1", "r0"), (7, "1", "r7"), (50, "2", "r50"), (73, "2", "r73"), (100, "3", "r100")],
+)
+async def test_offset_reads_the_page_that_holds_it(monkeypatch, offset, page, first):
+    fake = _paging_api(130)
+    result = await _call(monkeypatch, fake, "blumira_findings_list", {"offset": offset})
+    (request,) = fake.api()
+    assert request.url.params["page"] == page and request.url.params["page_size"] == "50"
+    end = min((offset // 50 + 1) * 50, 130)
+    assert _ids(result) == [f"r{i}" for i in range(offset, end)]
+    assert result["items"][0]["id"] == first
+    assert result["offset"] == offset
+    assert result["next_offset"] == (end if end < 130 else None)
+
+
+@pytest.mark.parametrize("tool,extra,path", PAGED_TOOLS, ids=TOOL_NAMES)
+async def test_offset_past_the_end_is_empty(monkeypatch, tool, extra, path):
+    fake = _paging_api(30)
+    result = await _call(monkeypatch, fake, tool, dict(extra, offset=500, page_size=10))
+    assert result["items"] == [] and result["count"] == 0
+    assert result["has_more"] is False
+    assert result["next_offset"] is None
+
+
+@pytest.mark.parametrize("tool,extra,path", PAGED_TOOLS, ids=TOOL_NAMES)
+async def test_offset_wins_over_page(monkeypatch, tool, extra, path):
+    fake = _paging_api(130)
+    result = await _call(monkeypatch, fake, tool, dict(extra, page=1, page_size=10, offset=25))
+    (request,) = fake.api()
+    assert request.url.params["page"] == "3" and request.url.params["page_size"] == "10"
+    assert _ids(result) == [f"r{i}" for i in range(25, 30)]
+    assert result["next_offset"] == 30
+
+
+@pytest.mark.parametrize("tool,extra,path", PAGED_TOOLS, ids=TOOL_NAMES)
+@pytest.mark.parametrize("page,page_size", [(None, None), (2, None), (3, 20), (0, 0), (1, 999)])
+async def test_page_only_call_sends_the_same_request(monkeypatch, tool, extra, path, page, page_size):
+    fake = _paging_api(130)
+    args = dict(extra, **{k: v for k, v in {"page": page, "page_size": page_size}.items() if v is not None})
+    result = await _call(monkeypatch, fake, tool, args)
+    (request,) = fake.api()
+    want_size = 50 if page_size is None else max(1, min(page_size, 200))
+    want_page = max(1, page or 1)
+    assert dict(request.url.params) == {"page": str(want_page), "page_size": str(want_size)}
+    start = (want_page - 1) * want_size
+    assert _ids(result) == [f"r{i}" for i in range(start, min(start + want_size, 130))]
+    assert result["page"] == want_page
+    assert result["total_items"] == 130
+    assert result["has_more"] is (start + want_size < 130)
+
+
+async def test_page_only_call_keeps_filters_and_limit(monkeypatch):
+    fake = _paging_api(130)
+    await _call(monkeypatch, fake, "blumira_findings_list", {"page": 2, "limit": 300, "order_by": "created;desc", "priority": 1})
+    (request,) = fake.api()
+    assert dict(request.url.params) == {
+        "page": "2", "page_size": "50", "limit": "300", "order_by": "created;desc", "priority": "1"
+    }

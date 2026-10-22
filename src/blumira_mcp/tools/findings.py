@@ -29,6 +29,7 @@ from ._common import (
     DateTime,
     FindingId,
     Limit,
+    Offset,
     OrderBy,
     Owners,
     OwnerType,
@@ -41,6 +42,7 @@ from ._common import (
     Status,
     compact,
     list_result,
+    locate,
     page_params,
     path_id,
     run_tool,
@@ -73,12 +75,13 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         """
 
         async def action(client: BlumiraClient) -> dict:
-            params = page_params(kwargs.get("page"), kwargs.get("page_size"), kwargs.get("limit"), kwargs.get("order_by"))
+            number, size, start = locate(kwargs.get("offset"), kwargs.get("page"), kwargs.get("page_size"))
+            params = page_params(number, size, kwargs.get("limit"), kwargs.get("order_by"))
             for _python, api, _type in _FILTERS:
                 value = kwargs.get(api, kwargs.get(_python))
                 if value is not None:
                     params[api] = value
-            return list_result(await client.get("/org/findings", params))
+            return list_result(await client.get("/org/findings", params), number, size, start)
 
         return await run_tool("blumira_findings_list", client_factory, action)
 
@@ -90,7 +93,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
     ] + [
         inspect.Parameter(python, inspect.Parameter.KEYWORD_ONLY, default=None, annotation=annotation)
         for python, _api, annotation in _FILTERS
-    ]
+    ] + [inspect.Parameter("offset", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=Offset)]
     blumira_findings_list.__signature__ = inspect.Signature(parameters, return_annotation=str)
     mcp.tool(annotations=READ_ONLY)(blumira_findings_list)
 

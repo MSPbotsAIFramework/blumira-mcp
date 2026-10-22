@@ -44,6 +44,10 @@ NOT_CONFIGURED = error_envelope(
 
 Page = Annotated[int | None, Field(description="Page number, from 1 (default 1).")]
 PageSize = Annotated[int | None, Field(description=f"Records per page (default {DEFAULT_PAGE_SIZE}, max {MAX_PAGE_SIZE}).")]
+Offset = Annotated[
+    int | None,
+    Field(description="Record position to start from (0-based, overrides page); pass next_offset from the previous result.", ge=0),
+]
 Limit = Annotated[int | None, Field(description="Maximum total records across pages (API default 200).")]
 OrderBy = Annotated[str | None, Field(description='Sort, e.g. "created;desc" or "name;asc,created;desc".')]
 AccountId = Annotated[str, Field(description="MSP sub-account id (from blumira_msp_accounts_list).")]
@@ -77,8 +81,28 @@ def page_params(
     return params
 
 
-def list_result(document: Any) -> dict[str, Any]:
-    """Shape ``{status, data, links, meta}`` as ``{items, count, page, total_pages, total_items, has_more}``."""
+def locate(offset: int | None, page: int | None, page_size: int | None) -> tuple[int, int, int]:
+    """(page, page_size, start) for a read from record ``start``.
+
+    Blumira pages by number only, so a position is reached by asking for the page that
+    holds it (same page size) and skipping the records before it. Without ``offset`` the
+    page and size are exactly what page_params would send.
+    """
+    size = DEFAULT_PAGE_SIZE if page_size is None else max(1, min(int(page_size), MAX_PAGE_SIZE))
+    start = offset if offset is not None else (max(1, int(page or 1)) - 1) * size
+    return start // size + 1, size, start
+
+
+def list_result(
+    document: Any, page: int | None = None, size: int | None = None, start: int | None = None
+) -> dict[str, Any]:
+    """Shape ``{status, data, links, meta}`` as ``{items, count, page, total_pages, total_items, has_more}``.
+
+    For a paged read (``page`` and ``size`` from locate) the items start at record ``start``
+    and ``offset`` / ``next_offset`` are added. next_offset continues right after the last
+    record returned, also when the result is cut to fit the size limit (a page number
+    cannot: the rest of a cut page is not on any other page).
+    """
     doc = document if isinstance(document, dict) else {}
     items = doc.get("data")
     if items is None:
@@ -87,14 +111,25 @@ def list_result(document: Any) -> dict[str, Any]:
         items = [items]
     meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
     links = doc.get("links") if isinstance(doc.get("links"), dict) else {}
-    return {
+    paged = page is not None and size is not None
+    if paged:
+        first = (page - 1) * size
+        start = first if start is None else start
+        items = items[start - first :]
+    more = bool(links.get("next"))
+    result = {
         "items": items,
         "count": len(items),
         "page": meta.get("page"),
         "total_pages": meta.get("total_pages"),
         "total_items": meta.get("total_items"),
-        "has_more": bool(links.get("next")),
+        "has_more": more,
     }
+    if paged:
+        result["offset"] = start
+        result["next_offset"] = start + len(items) if more else None
+        result["_resume"] = {"key": "next_offset", "start": start}
+    return result
 
 
 def single_result(document: Any) -> Any:
